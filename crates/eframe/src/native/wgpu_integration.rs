@@ -609,21 +609,13 @@ impl WgpuWinitRunning {
 
         integration.post_rendering(window);
 
-        let active_viewports_ids: ViewportIdSet = viewport_output.keys().copied().collect();
-
         shared.handle_viewport_output(&integration.egui_ctx, viewport_output);
 
         let SharedState {
             viewports,
-            painter,
             viewport_from_window,
             ..
         } = &mut *shared;
-
-        // Prune dead viewports:
-        viewports.retain(|id, _| active_viewports_ids.contains(id));
-        viewport_from_window.retain(|_, id| active_viewports_ids.contains(id));
-        painter.gc_viewports(&active_viewports_ids);
 
         let window = viewport_from_window
             .get(&window_id)
@@ -815,9 +807,13 @@ impl SharedState {
     ) {
         let Self {
             viewports,
+            painter,
+            viewport_from_window,
             focused_viewport,
             ..
         } = self;
+
+        let active_viewports_ids: ViewportIdSet = viewport_output.keys().copied().collect();
 
         for (
             viewport_id,
@@ -855,6 +851,11 @@ impl SharedState {
                 );
             }
         }
+
+        // Prune dead viewports:
+        viewports.retain(|id, _| active_viewports_ids.contains(id));
+        viewport_from_window.retain(|_, id| active_viewports_ids.contains(id));
+        painter.gc_viewports(&active_viewports_ids);
     }
 }
 
