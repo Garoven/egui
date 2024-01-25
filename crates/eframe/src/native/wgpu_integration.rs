@@ -116,65 +116,6 @@ impl WgpuWinitApp {
         }
     }
 
-    /// Create a window for all viewports lacking one.
-    fn initialized_all_windows(&mut self, event_loop: &EventLoopWindowTarget<UserEvent>) {
-        let Some(running) = &mut self.running else {
-            return;
-        };
-        let mut shared = running.shared.borrow_mut();
-        let SharedState {
-            viewports,
-            painter,
-            viewport_from_window,
-            ..
-        } = &mut *shared;
-
-        for viewport in viewports.values_mut() {
-            viewport.initialize_window(
-                event_loop,
-                &running.integration.egui_ctx,
-                viewport_from_window,
-                painter,
-            );
-        }
-    }
-
-    #[cfg(target_os = "android")]
-    fn recreate_window(
-        &self,
-        event_loop: &EventLoopWindowTarget<UserEvent>,
-        running: &WgpuWinitRunning,
-    ) {
-        let SharedState {
-            egui_ctx,
-            viewports,
-            viewport_from_window,
-            painter,
-            ..
-        } = &mut *running.shared.borrow_mut();
-
-        initialize_or_update_viewport(
-            egui_ctx,
-            viewports,
-            ViewportIdPair::ROOT,
-            ViewportClass::Root,
-            self.native_options.viewport.clone(),
-            None,
-            None,
-        )
-        .initialize_window(event_loop, egui_ctx, viewport_from_window, painter);
-    }
-
-    #[cfg(target_os = "android")]
-    fn drop_window(&mut self) -> Result<(), egui_wgpu::WgpuError> {
-        if let Some(running) = &mut self.running {
-            let mut shared = running.shared.borrow_mut();
-            shared.viewports.remove(&ViewportId::ROOT);
-            pollster::block_on(shared.painter.set_window(ViewportId::ROOT, None))?;
-        }
-        Ok(())
-    }
-
     fn init_run_state(
         &mut self,
         egui_ctx: egui::Context,
@@ -807,6 +748,112 @@ impl WgpuWinitRunning {
     }
 }
 
+impl SharedState {
+    /// Create a window for all viewports lacking one.
+    fn initialize_all_windows(&mut self, event_loop: &EventLoopWindowTarget<UserEvent>) {
+        let SharedState {
+            egui_ctx,
+            viewports,
+            painter,
+            viewport_from_window,
+            ..
+        } = self;
+
+        for viewport in viewports.values_mut() {
+            viewport.initialize_window(event_loop, &egui_ctx, viewport_from_window, painter);
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    fn recreate_window(
+        &mut self,
+        event_loop: &EventLoopWindowTarget<UserEvent>,
+        builder: ViewportBuilder,
+    ) {
+        let SharedState {
+            egui_ctx,
+            viewports,
+            viewport_from_window,
+            painter,
+            ..
+        } = self;
+
+        initialize_or_update_viewport(
+            egui_ctx,
+            viewports,
+            ViewportIdPair::ROOT,
+            ViewportClass::Root,
+            builder,
+            None,
+            None,
+        )
+        .initialize_window(event_loop, egui_ctx, viewport_from_window, painter);
+    }
+
+    #[cfg(target_os = "android")]
+    fn drop_window(&mut self) -> Result<(), egui_wgpu::WgpuError> {
+        let Self {
+            viewports, painter, ..
+        } = self;
+
+        viewports.remove(&ViewportId::ROOT);
+        pollster::block_on(painter.set_window(ViewportId::ROOT, None))?;
+
+        Ok(())
+    }
+
+    /// Add new viewports, and update existing ones:
+    fn handle_viewport_output(
+        &mut self,
+        egui_ctx: &egui::Context,
+        viewport_output: ViewportIdMap<ViewportOutput>,
+    ) {
+        let Self {
+            egui_ctx,
+            viewports,
+            focused_viewport,
+            ..
+        } = self;
+
+        for (
+            viewport_id,
+            ViewportOutput {
+                parent,
+                class,
+                builder,
+                viewport_ui_cb,
+                commands,
+                repaint_delay: _, // ignored - we listened to the repaint callback instead
+            },
+        ) in viewport_output
+        {
+            let ids = ViewportIdPair::from_self_and_parent(viewport_id, parent);
+
+            let viewport = initialize_or_update_viewport(
+                egui_ctx,
+                viewports,
+                ids,
+                class,
+                builder,
+                viewport_ui_cb,
+                *focused_viewport,
+            );
+
+            if let Some(window) = viewport.window.as_ref() {
+                let is_viewport_focused = *focused_viewport == Some(viewport_id);
+                egui_winit::process_viewport_commands(
+                    egui_ctx,
+                    &mut viewport.info,
+                    commands,
+                    window,
+                    is_viewport_focused,
+                    &mut viewport.screenshot_requested,
+                );
+            }
+        }
+    }
+}
+
 impl Viewport {
     /// Create winit window, if needed.
     fn initialize_window(
@@ -985,51 +1032,6 @@ fn render_immediate_viewport(
     egui_winit.handle_platform_output(window, platform_output);
 
     handle_viewport_output(&egui_ctx, viewport_output, viewports, *focused_viewport);
-}
-
-/// Add new viewports, and update existing ones:
-fn handle_viewport_output(
-    egui_ctx: &egui::Context,
-    viewport_output: ViewportIdMap<ViewportOutput>,
-    viewports: &mut ViewportIdMap<Viewport>,
-    focused_viewport: Option<ViewportId>,
-) {
-    for (
-        viewport_id,
-        ViewportOutput {
-            parent,
-            class,
-            builder,
-            viewport_ui_cb,
-            commands,
-            repaint_delay: _, // ignored - we listened to the repaint callback instead
-        },
-    ) in viewport_output
-    {
-        let ids = ViewportIdPair::from_self_and_parent(viewport_id, parent);
-
-        let viewport = initialize_or_update_viewport(
-            egui_ctx,
-            viewports,
-            ids,
-            class,
-            builder,
-            viewport_ui_cb,
-            focused_viewport,
-        );
-
-        if let Some(window) = viewport.window.as_ref() {
-            let is_viewport_focused = focused_viewport == Some(viewport_id);
-            egui_winit::process_viewport_commands(
-                egui_ctx,
-                &mut viewport.info,
-                commands,
-                window,
-                is_viewport_focused,
-                &mut viewport.screenshot_requested,
-            );
-        }
-    }
 }
 
 fn initialize_or_update_viewport<'vp>(
