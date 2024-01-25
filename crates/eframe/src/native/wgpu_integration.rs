@@ -330,9 +330,11 @@ impl WinitApp for WgpuWinitApp {
         event_loop: &EventLoopWindowTarget<UserEvent>,
         window_id: WindowId,
     ) -> EventResult {
-        self.initialized_all_windows(event_loop);
-
         if let Some(running) = &mut self.running {
+            running
+                .shared
+                .borrow_mut()
+                .initialize_all_windows(event_loop);
             running.run_ui_and_paint(window_id)
         } else {
             EventResult::Wait
@@ -346,13 +348,15 @@ impl WinitApp for WgpuWinitApp {
     ) -> Result<EventResult> {
         crate::profile_function!(winit_integration::short_event_description(event));
 
-        self.initialized_all_windows(event_loop);
-
         Ok(match event {
             winit::event::Event::Resumed => {
                 log::debug!("Event::Resumed");
 
                 let running = if let Some(running) = &self.running {
+                    running
+                        .shared
+                        .borrow_mut()
+                        .initialize_all_windows(event_loop);
                     #[cfg(target_os = "android")]
                     self.recreate_window(event_loop, running);
                     running
@@ -550,8 +554,7 @@ impl WgpuWinitRunning {
             egui_ctx,
             viewports,
             painter,
-            viewport_from_window,
-            focused_viewport,
+            ..
         } = &mut *shared;
 
         let Some(viewport) = viewports.get_mut(&viewport_id) else {
@@ -608,12 +611,14 @@ impl WgpuWinitRunning {
 
         let active_viewports_ids: ViewportIdSet = viewport_output.keys().copied().collect();
 
-        handle_viewport_output(
-            &integration.egui_ctx,
-            viewport_output,
+        shared.handle_viewport_output(&integration.egui_ctx, viewport_output);
+
+        let SharedState {
             viewports,
-            *focused_viewport,
-        );
+            painter,
+            viewport_from_window,
+            ..
+        } = &mut *shared;
 
         // Prune dead viewports:
         viewports.retain(|id, _| active_viewports_ids.contains(id));
@@ -760,7 +765,7 @@ impl SharedState {
         } = self;
 
         for viewport in viewports.values_mut() {
-            viewport.initialize_window(event_loop, &egui_ctx, viewport_from_window, painter);
+            viewport.initialize_window(event_loop, egui_ctx, viewport_from_window, painter);
         }
     }
 
@@ -809,7 +814,6 @@ impl SharedState {
         viewport_output: ViewportIdMap<ViewportOutput>,
     ) {
         let Self {
-            egui_ctx,
             viewports,
             focused_viewport,
             ..
@@ -995,10 +999,7 @@ fn render_immediate_viewport(
 
     let mut shared = shared.borrow_mut();
     let SharedState {
-        viewports,
-        painter,
-        focused_viewport,
-        ..
+        viewports, painter, ..
     } = &mut *shared;
 
     let Some(viewport) = viewports.get_mut(&ids.this) else {
@@ -1031,7 +1032,7 @@ fn render_immediate_viewport(
 
     egui_winit.handle_platform_output(window, platform_output);
 
-    handle_viewport_output(&egui_ctx, viewport_output, viewports, *focused_viewport);
+    shared.handle_viewport_output(&egui_ctx, viewport_output);
 }
 
 fn initialize_or_update_viewport<'vp>(
